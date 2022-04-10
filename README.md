@@ -12,3 +12,9 @@ Exit with "quit" command or `Ctrl+D`.
 ```bash
 stack run -- "scm/stdlib.scm"
 ```
+
+# Measuring runtime statistics
+
+```bash
+./.stack-work/dist/x86_64-linux-tinfo6/Cabal-3.4.1.0/build/scheme48-exe/scheme48-exe "scm/factorial.scm" +RTS -sstderr
+```
