@@ -26,6 +26,7 @@ import System.IO
   )
 import Control.Monad.State
 import Data.Function ((&))
+import qualified Data.Map as M
 
 eval :: LispVal -> StateThrowsError LispVal
 eval val@(String _) = pure val
@@ -54,12 +55,17 @@ eval val@(List (Atom "define":List (Atom var:params):body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
   env <- get
-  defineVar env var $ makeNormalFunc env params body
+  -- Curious case: func is defined in terms of fnclosure and the other way around
+  let func = makeNormalFunc fnclosure params body
+      fnclosure = M.insert var func env
+  defineVar env var func
 eval val@(List (Atom "define":DottedList (Atom var:params) varargs:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
   env <- get
-  defineVar env var $ makeVarArgs varargs env params body
+  let func = makeVarArgs varargs fnclosure params body
+      fnclosure = M.insert var func env
+  defineVar env var func
 eval val@(List (Atom "lambda":List params:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
