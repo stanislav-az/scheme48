@@ -9,7 +9,7 @@ import Control.Monad.Except
   ( MonadError(catchError, throwError)
   , MonadIO(liftIO)
   , liftEither
-  , when
+  , when, runExceptT
   )
 import Data.Functor ((<&>))
 import Data.Maybe (isNothing)
@@ -24,91 +24,102 @@ import System.IO
   , stdin
   , stdout
   )
+import Control.Monad.State
+import Data.Function ((&))
 
-eval :: Env -> LispVal -> IOThrowsError LispVal
-eval env val@(String _) = pure val
-eval env val@(Number _) = pure val
-eval env val@(Float _) = pure val
-eval env val@(Bool _) = pure val
-eval env (Atom atom) = getVar env atom
-eval env (List [Atom "quote", val]) = pure val
-eval env (List [Atom "if", pred, conseq, alt]) = do
-  result <- eval env pred
+eval :: LispVal -> StateThrowsError LispVal
+eval val@(String _) = pure val
+eval val@(Number _) = pure val
+eval val@(Float _) = pure val
+eval val@(Bool _) = pure val
+eval (Atom atom) = get >>= getVar atom
+eval (List [Atom "quote", val]) = pure val
+eval (List [Atom "if", pred, conseq, alt]) = do
+  result <- eval pred
   case result of
-    Bool False -> eval env alt
-    _ -> eval env conseq
-eval env (List (Atom "cond":clauses)) = condToIf env clauses
-eval env (List [Atom "set!", Atom var, form]) = eval env form >>= setVar env var
-eval env (List [Atom "load", String filename]) =
-  load filename >>= fmap last . mapM (eval env)
-eval env (List [Atom "define", Atom var, form]) =
-  eval env form >>= defineVar env var
-eval env val@(List (Atom "define":List (Atom var:params):body)) = do
+    Bool False -> eval alt
+    _ -> eval conseq
+eval (List (Atom "cond":clauses)) = condToIf clauses
+eval (List [Atom "set!", Atom var, form]) = do
+  val <- eval form
+  env <- get
+  setVar env var val
+eval (List [Atom "load", String filename]) =
+  load filename >>= fmap last . mapM eval
+eval (List [Atom "define", Atom var, form]) = do
+  val <- eval form
+  env <- get
+  defineVar env var val
+eval val@(List (Atom "define":List (Atom var:params):body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
+  env <- get
   defineVar env var $ makeNormalFunc env params body
-eval env val@(List (Atom "define":DottedList (Atom var:params) varargs:body)) = do
+eval val@(List (Atom "define":DottedList (Atom var:params) varargs:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
+  env <- get
   defineVar env var $ makeVarArgs varargs env params body
-eval env val@(List (Atom "lambda":List params:body)) = do
+eval val@(List (Atom "lambda":List params:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
+  env <- get
   pure $ makeNormalFunc env params body
-eval env val@(List (Atom "lambda":DottedList params varargs:body)) = do
+eval val@(List (Atom "lambda":DottedList params varargs:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
+  env <- get
   pure $ makeVarArgs varargs env params body
-eval env val@(List (Atom "lambda":varargs@(Atom _):body)) = do
+eval val@(List (Atom "lambda":varargs@(Atom _):body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
+  env <- get
   pure $ makeVarArgs varargs env [] body
-eval env (List (function:args)) = do
-  func <- eval env function
-  argVals <- mapM (eval env) args
+eval (List (function:args)) = do
+  func <- eval function
+  argVals <- mapM (eval) args
   apply func argVals
-eval env badForm =
+eval badForm =
   throwError $ BadSpecialForm "Unrecognized special form" badForm
 
-condToIf :: Env -> [LispVal] -> IOThrowsError LispVal
-condToIf env [] = pure $ Bool False
-condToIf env (c:cs) =
+condToIf :: [LispVal] -> StateThrowsError LispVal
+condToIf [] = pure $ Bool False
+condToIf (c:cs) =
   case c of
-    List [Atom "else", expr] -> eval env expr
+    List [Atom "else", expr] -> eval expr
     List [pred, conseq] -> do
-      alt <- condToIf env cs
-      eval env (List [Atom "if", pred, conseq, alt])
+      alt <- condToIf cs
+      eval (List [Atom "if", pred, conseq, alt])
     badClause -> throwError $ SyntaxError "cond" badClause
 
-apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
+apply :: LispVal -> [LispVal] -> StateThrowsError LispVal
 apply (PrimitiveFunc func) args = liftEither $ func args
 apply (IOFunc func) args = func args
 apply (Func Function {..}) args =
   if num params /= num args && isNothing vararg
     then throwError $ NumArgs (num params) args
-    else liftIO (bindVars closure $ zip params args) >>= bindVarArgs vararg >>=
-         evalBody
+    else do
+      res <- liftIO $ flip evalStateT newEnv $ runExceptT evalBody
+      either throwError pure res
   where
+    newEnv = bindVars closure (zip params args) & case vararg of
+      Just argName -> flip bindVars [(argName, List remainingArgs)]
+      Nothing -> id
     remainingArgs = drop (length params) args
     num = toInteger . length
-    evalBody env = last <$> mapM (eval env) body
-    bindVarArgs arg env =
-      case arg of
-        Just argName -> liftIO $ bindVars env [(argName, List remainingArgs)]
-        Nothing -> return env
+    evalBody = last <$> mapM eval body
+
 apply badForm args = throwError $ NotFunction "Value is not a function" badForm
 
-primitiveBindings :: IO Env
+primitiveBindings :: Env
 primitiveBindings =
-  nullEnv >>=
-  flip
-    bindVars
+    bindVars nullEnv
     (map (makeFunc IOFunc) ioPrimitives ++
      map (makeFunc PrimitiveFunc) primitives)
   where
     makeFunc constructor (var, func) = (var, constructor func)
 
-ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
+ioPrimitives :: [(String, [LispVal] -> StateThrowsError LispVal)]
 ioPrimitives =
   [ ("apply", applyProc)
   , ("open-input-file", makePort ReadMode)
@@ -121,42 +132,42 @@ ioPrimitives =
   , ("read-all", readAll)
   ]
 
-applyProc :: [LispVal] -> IOThrowsError LispVal
+applyProc :: [LispVal] -> StateThrowsError LispVal
 applyProc [func, List args] = apply func args
 applyProc (func:args) = apply func args
 applyProc [] = throwError $ NumArgs 1 []
 
-makePort :: IOMode -> [LispVal] -> IOThrowsError LispVal
+makePort :: IOMode -> [LispVal] -> StateThrowsError LispVal
 makePort mode [String filename] = fmap Port $ liftIO $ openFile filename mode
 makePort mode [t] = throwError $ TypeMismatch "string" t
 makePort mode args = throwError $ NumArgs 1 args
 
-closePort :: [LispVal] -> IOThrowsError LispVal
+closePort :: [LispVal] -> StateThrowsError LispVal
 closePort [Port port] = Bool True <$ liftIO (hClose port)
 closePort [t] = throwError $ TypeMismatch "port" t
 closePort args = throwError $ NumArgs 1 args
 
-readProc :: [LispVal] -> IOThrowsError LispVal
+readProc :: [LispVal] -> StateThrowsError LispVal
 readProc [] = readProc [Port stdin]
 readProc [Port port] = liftIO (hGetLine port) >>= liftEither . readExpr
 readProc [t] = throwError $ TypeMismatch "port" t
 readProc args = throwError $ NumArgs 1 args
 
-writeProc :: [LispVal] -> IOThrowsError LispVal
+writeProc :: [LispVal] -> StateThrowsError LispVal
 writeProc [obj] = writeProc [obj, Port stdout]
 writeProc [obj, Port port] = Bool True <$ liftIO (hPrint port obj)
 writeProc [obj, t] = throwError $ TypeMismatch "port" t
 writeProc args = throwError $ NumArgs 2 args
 
-readContents :: [LispVal] -> IOThrowsError LispVal
+readContents :: [LispVal] -> StateThrowsError LispVal
 readContents [String filename] = fmap String $ liftIO $ readFile filename
 readContents [t] = throwError $ TypeMismatch "string" t
 readContents args = throwError $ NumArgs 1 args
 
-load :: String -> IOThrowsError [LispVal]
+load :: String -> StateThrowsError [LispVal]
 load filename = liftIO (readFile filename) >>= liftEither . readExprList
 
-readAll :: [LispVal] -> IOThrowsError LispVal
+readAll :: [LispVal] -> StateThrowsError LispVal
 readAll [String filename] = List <$> load filename
 readAll [t] = throwError $ TypeMismatch "string" t
 readAll args = throwError $ NumArgs 1 args

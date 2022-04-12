@@ -7,16 +7,13 @@ import System.IO (hFlush, hPutStrLn, stderr, stdout)
 
 runRepl :: IO ()
 runRepl =
-  primitiveBindings >>=
-  until_ (== "quit") (readPrompt "Lisp>>> ") . evalAndPrint
+  untilSt (== "quit") (readPrompt "Lisp>>> ") evalAndPrint primitiveBindings
 
 runOne :: [String] -> IO ()
 runOne args = do
-  env <-
-    primitiveBindings >>=
-    flip bindVars [("args", List $ map String $ drop 1 args)]
-  runIOThrows (eval env (List [Atom "load", String (head args)])) >>=
-    hPutStrLn stderr
+  let env = bindVars primitiveBindings [("args", List $ map String $ drop 1 args)]
+  runIOThrows env (eval (List [Atom "load", String (head args)])) >>=
+    hPutStrLn stderr . fst
 
 flushStr :: String -> IO ()
 flushStr str = putStr str >> hFlush stdout
@@ -24,13 +21,21 @@ flushStr str = putStr str >> hFlush stdout
 readPrompt :: String -> IO String
 readPrompt prompt = flushStr prompt >> getLine
 
-evalString :: Env -> String -> IO String
-evalString env expr = runIOThrows $ liftEither (readExpr expr) >>= eval env
+evalString :: Env -> String -> IO (String, Env)
+evalString env expr = runIOThrows env $ liftEither (readExpr expr) >>= eval
 
-evalAndPrint :: Env -> String -> IO ()
-evalAndPrint env = putStrLn <=< evalString env
+evalAndPrint :: Env -> String -> IO Env
+evalAndPrint env input = do
+  (msg, st) <- evalString env input
+  putStrLn msg
+  pure st
 
 until_ :: Monad m => (a -> Bool) -> m a -> (a -> m ()) -> m ()
 until_ pred prompt action = do
   result <- prompt
   unless (pred result) $ action result >> until_ pred prompt action
+
+untilSt :: Monad m => (a -> Bool) -> m a -> (s -> a -> m s) -> s -> m ()
+untilSt pred prompt action st = do
+  result <- prompt
+  unless (pred result) $ action st result >>= untilSt pred prompt action
