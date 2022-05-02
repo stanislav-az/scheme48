@@ -50,14 +50,12 @@ Lisp>>> (define (f n) (define x n) x)
 (lambda ("n") ...)
 Lisp>>> (f 5)
 5
+Lisp>>> x
+3
 Lisp>>> (define (g k) (set! x 7) k)
 (lambda ("k") ...)
-Lisp>>> x
-3
-Lisp>>> x
-3
 Lisp>>> (g 9)
 9
 Lisp>>> x
-3
+7
 ```

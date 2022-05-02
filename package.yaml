@@ -24,6 +24,7 @@ dependencies:
 - parsec
 - mtl
 - containers
+- lens
 
 library:
   source-dirs: src

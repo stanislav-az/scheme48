@@ -51,22 +51,25 @@ eval (List [Atom "load", String filename]) =
 eval (List [Atom "define", Atom var, form]) = do
   val <- eval form
   env <- get
-  defineVar env var val
+  put $ defineVar env var val
+  pure val
 eval val@(List (Atom "define":List (Atom var:params):body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
   env <- get
   -- Curious case: func is defined in terms of fnclosure and the other way around
   let func = makeNormalFunc fnclosure params body
-      fnclosure = M.insert var func env
-  defineVar env var func
+      fnclosure = defineVar env var func
+  put fnclosure
+  pure func
 eval val@(List (Atom "define":DottedList (Atom var:params) varargs:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
   env <- get
   let func = makeVarArgs varargs fnclosure params body
-      fnclosure = M.insert var func env
-  defineVar env var func
+      fnclosure = defineVar env var func
+  put fnclosure
+  pure func
 eval val@(List (Atom "lambda":List params:body)) = do
   when (null body) $ throwError $
     SyntaxError "Lambda expression does not have body" val
@@ -106,23 +109,24 @@ apply (Func Function {..}) args =
   if num params /= num args && isNothing vararg
     then throwError $ NumArgs (num params) args
     else do
-      res <- liftIO $ flip evalStateT newEnv $ runExceptT evalBody
+      currentEnv <- get
+      (res, bodyEnv) <- liftIO $ flip runStateT newEnv $ runExceptT evalBody
+      put $ mergeEnvs currentEnv bodyEnv
       either throwError pure res
   where
-    newEnv = bindVars closure (zip params args) & case vararg of
-      Just argName -> flip bindVars [(argName, List remainingArgs)]
-      Nothing -> id
+    newEnv = bindVars closure $ zip params args ++ case vararg of
+      Just argName -> [(argName, List remainingArgs)]
+      Nothing -> []
     remainingArgs = drop (length params) args
     num = toInteger . length
     evalBody = last <$> mapM eval body
 
 apply badForm args = throwError $ NotFunction "Value is not a function" badForm
 
-primitiveBindings :: Env
+primitiveBindings :: [(String, LispVal)]
 primitiveBindings =
-    bindVars nullEnv
-    (map (makeFunc IOFunc) ioPrimitives ++
-     map (makeFunc PrimitiveFunc) primitives)
+    map (makeFunc IOFunc) ioPrimitives ++
+     map (makeFunc PrimitiveFunc) primitives
   where
     makeFunc constructor (var, func) = (var, constructor func)
 

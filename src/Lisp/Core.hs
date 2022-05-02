@@ -3,6 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Lisp.Core where
 
@@ -19,6 +20,12 @@ import System.IO (Handle)
 import qualified Text.ParserCombinators.Parsec as P
 import qualified Data.Map as M
 import Control.Monad.State
+import qualified Control.Lens as Lens
+import qualified Data.Set as Set
+
+type ThrowsError = Either LispError
+
+type StateThrowsError = ExceptT LispError (StateT Env IO)
 
 data LispVal
   = Atom String
@@ -107,40 +114,54 @@ showError (Default e) = e
 instance Show LispError where
   show = showError
 
-type Env = M.Map String LispVal
+data Env = Env {
+  dict :: M.Map String LispVal,
+  defined :: Set.Set String
+  }
 
-type ThrowsError = Either LispError
-
-type StateThrowsError = ExceptT LispError (StateT Env IO)
+Lens.makeClassy_ ''Env
 
 nullEnv :: Env
-nullEnv = M.empty
+nullEnv = Env M.empty Set.empty
 
 runIOThrows :: (Show a) => Env -> StateThrowsError a -> IO (String, Env)
 runIOThrows st action = do
   (res, newSt) <- flip runStateT st . runExceptT $ action
   pure (either show show res, newSt)
 
-isBound :: Env -> String -> Bool
-isBound = flip M.member
+isBound :: String -> Env -> Bool
+isBound var Env {..} = var `M.member` dict
 
 getVar :: String -> Env -> StateThrowsError LispVal
-getVar var envRef = do
+getVar var Env{..} = do
   maybe
     (throwError $ UnboundVar "Getting an unbound variable" var)
     pure
-    (M.lookup var envRef)
+    (M.lookup var dict)
 
 setVar :: Env -> String -> LispVal -> StateThrowsError LispVal
 setVar envRef var value = do
-  when (isNothing $ M.lookup var envRef) $ throwError $ UnboundVar "Setting an unbound variable" var
-  modify $ M.insert var value
+  unless (var `isBound` envRef) $ throwError $ UnboundVar "Setting an unbound variable" var
+  _dict Lens.%= M.insert var value
   pure value
 
-defineVar :: Env -> String -> LispVal -> StateThrowsError LispVal
-defineVar envRef var value = do
-  modify $ M.insert var value
-  pure value
+defineVar :: Env -> String -> LispVal -> Env
+defineVar envRef var value = envRef Lens.&
+  _dict Lens.%~ M.insert var value
+  Lens.&
+  _defined Lens.%~ Set.insert var
 
+-- Creates new frame by erasing previous bindings
 bindVars :: Env -> [(String, LispVal)] -> Env
-bindVars envRef bindings = M.union (M.fromList bindings) envRef
+bindVars envRef bindings = envRef Lens.&
+  _dict Lens.%~ M.union (M.fromList bindings)
+  Lens.&
+  _defined Lens..~ vars
+  where
+    vars = Set.fromList $ fst <$> bindings
+
+mergeEnvs :: Env -> Env -> Env
+mergeEnvs oldEnv newEnv = oldEnv Lens.&
+  _dict Lens.%~ M.union oldBindings
+  where
+    oldBindings = M.restrictKeys (dict newEnv) (defined oldEnv Set.\\ defined newEnv)

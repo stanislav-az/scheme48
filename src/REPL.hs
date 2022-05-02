@@ -7,11 +7,11 @@ import System.IO (hFlush, hPutStrLn, stderr, stdout)
 
 runRepl :: IO ()
 runRepl =
-  untilSt (== "quit") (readPrompt "Lisp>>> ") evalAndPrint primitiveBindings
+  untilSt (== "quit") (readPrompt "Lisp>>> ") evalAndPrint (bindVars nullEnv primitiveBindings)
 
 runOne :: [String] -> IO ()
 runOne args = do
-  let env = bindVars primitiveBindings [("args", List $ map String $ drop 1 args)]
+  let env = bindVars nullEnv $ ("args", List $ map String $ drop 1 args) : primitiveBindings
   runIOThrows env (eval (List [Atom "load", String (head args)])) >>=
     hPutStrLn stderr . fst
 
