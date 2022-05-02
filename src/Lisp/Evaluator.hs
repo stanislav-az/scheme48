@@ -27,6 +27,7 @@ import System.IO
 import Control.Monad.State
 import Data.Function ((&))
 import qualified Data.Map as M
+import Data.List ( foldl1' )
 
 eval :: LispVal -> StateThrowsError LispVal
 eval val@(String _) = pure val
@@ -83,7 +84,7 @@ eval val@(List (Atom "lambda":varargs@(Atom _):body)) = do
   pure $ makeVarArgs varargs env [] body
 eval (List (function:args)) = do
   func <- eval function
-  argVals <- mapM (eval) args
+  argVals <- mapM eval args
   apply func argVals
 eval badForm =
   throwError $ BadSpecialForm "Unrecognized special form" badForm
@@ -184,7 +185,7 @@ primitives =
   , ("-", numericBinop (-))
   , ("*", numericBinop (*))
   , ("/", integralBinop div)
-  , ("/.", fractionalBinop (/))
+  , ("/f", divFractionalBinop)
   , ("mod", integralBinop mod)
   , ("quotient", integralBinop quot)
   , ("remainder", integralBinop rem)
@@ -258,13 +259,21 @@ integralBinop ::
      (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
 integralBinop op [] = throwError $ NumArgs 2 []
 integralBinop op singleVal@[_] = throwError $ NumArgs 2 singleVal
-integralBinop op args = mapM unpackInteger args <&> Number . foldl1 op
+integralBinop op args = do
+  ns <- mapM unpackInteger args
+  if elem 0 $ drop 1 ns
+    then throwError DividingByZero
+    else pure . Number . foldl1' op $ ns
 
-fractionalBinop ::
-     (Double -> Double -> Double) -> [LispVal] -> ThrowsError LispVal
-fractionalBinop op [] = throwError $ NumArgs 2 []
-fractionalBinop op singleVal@[_] = throwError $ NumArgs 2 singleVal
-fractionalBinop op args = mapM unpackDouble args <&> Float . foldl1 op
+divFractionalBinop ::
+     [LispVal] -> ThrowsError LispVal
+divFractionalBinop [] = throwError $ NumArgs 2 []
+divFractionalBinop singleVal@[_] = throwError $ NumArgs 2 singleVal
+divFractionalBinop args = do
+  ns <- mapM unpackDouble args
+  if elem 0 $ drop 1 ns
+    then throwError DividingByZero
+    else pure . Float . foldl1' (/) $ ns
 
 unpackInteger :: LispVal -> ThrowsError Integer
 unpackInteger (Number i) = pure i

@@ -1,6 +1,8 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 module Lisp.Core where
 
@@ -85,6 +87,7 @@ data LispError
   | NotFunction String LispVal
   | UnboundVar String String
   | SyntaxError String LispVal
+  | DividingByZero
   | Default String
 
 showError :: LispError -> String
@@ -98,6 +101,7 @@ showError (TypeMismatch expected found) =
 showError (Parser parseErr) = "Parse error at " ++ show parseErr
 showError (SyntaxError form ctx) =
   "Syntax error in special form \"" ++ form ++ "\" near " ++ show ctx
+showError DividingByZero = "Divide by zero exception"
 showError (Default e) = e
 
 instance Show LispError where
