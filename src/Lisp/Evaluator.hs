@@ -110,13 +110,14 @@ apply (Func Function {..}) args =
     then throwError $ NumArgs (num params) args
     else do
       currentEnv <- get
-      (res, bodyEnv) <- liftIO $ flip runStateT newEnv $ runExceptT evalBody
+      (res, bodyEnv) <- liftIO $ flip runStateT (mkNewEnv currentEnv) $ runExceptT evalBody
       put $ mergeEnvs currentEnv bodyEnv
       either throwError pure res
   where
-    newEnv = bindVars closure $ zip params args ++ case vararg of
-      Just argName -> [(argName, List remainingArgs)]
-      Nothing -> []
+    mkNewEnv lastEnv = bindVars (mergeClosures closure lastEnv) $
+      zip params args ++ case vararg of
+        Just argName -> [(argName, List remainingArgs)]
+        Nothing -> []
     remainingArgs = drop (length params) args
     num = toInteger . length
     evalBody = last <$> mapM eval body

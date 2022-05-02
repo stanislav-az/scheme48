@@ -165,3 +165,9 @@ mergeEnvs oldEnv newEnv = oldEnv Lens.&
   _dict Lens.%~ M.union oldBindings
   where
     oldBindings = M.restrictKeys (dict newEnv) (defined oldEnv Set.\\ defined newEnv)
+
+mergeClosures :: Env -> Env -> Env
+mergeClosures oldClosure newClosure = oldClosure Lens.&
+  _dict Lens.%~ M.union oldBindings
+  where
+    oldBindings = M.restrictKeys (dict newClosure) (defined oldClosure)
