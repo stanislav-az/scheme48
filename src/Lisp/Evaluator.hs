@@ -41,7 +41,7 @@ eval (List [Atom "if", pred, conseq, alt]) = do
   case result of
     Bool False -> eval alt
     _ -> eval conseq
-eval (List (Atom "cond":clauses)) = condToIf clauses
+eval (List (Atom "cond":clauses)) = liftEither (condToIf clauses) >>= eval
 eval (List [Atom "set!", Atom var, form]) = do
   val <- eval form
   env <- get
@@ -92,14 +92,14 @@ eval (List (function:args)) = do
 eval badForm =
   throwError $ BadSpecialForm "Unrecognized special form" badForm
 
-condToIf :: [LispVal] -> StateThrowsError LispVal
+condToIf :: [LispVal] -> ThrowsError LispVal
 condToIf [] = pure $ Bool False
 condToIf (c:cs) =
   case c of
-    List [Atom "else", expr] -> eval expr
+    List [Atom "else", expr] -> pure expr
     List [pred, conseq] -> do
       alt <- condToIf cs
-      eval (List [Atom "if", pred, conseq, alt])
+      pure (List [Atom "if", pred, conseq, alt])
     badClause -> throwError $ SyntaxError "cond" badClause
 
 apply :: LispVal -> [LispVal] -> StateThrowsError LispVal
