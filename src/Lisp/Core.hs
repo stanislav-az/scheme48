@@ -28,6 +28,7 @@ data LispVal
   | Func Function
   | IOFunc ([LispVal] -> IOThrowsError LispVal)
   | Port Handle
+  | Thunk (IORef (Either (Env, LispVal) LispVal))
 
 instance Show LispVal where
   show = showVal
@@ -71,6 +72,7 @@ showVal (Func Function {..}) =
   ") ...)"
 showVal (Port _) = "<IO port>"
 showVal (IOFunc _) = "<IO primitive>"
+showVal (Thunk _) = "<thunk>"
 
 unwordsList :: [LispVal] -> String
 unwordsList = unwords . map showVal

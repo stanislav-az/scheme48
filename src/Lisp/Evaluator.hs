@@ -24,6 +24,8 @@ import System.IO
   , stdin
   , stdout
   )
+import Data.IORef (readIORef, writeIORef, newIORef)
+import Control.Monad (forM)
 
 eval :: Env -> LispVal -> IOThrowsError LispVal
 eval env val@(String _) = pure val
@@ -33,7 +35,7 @@ eval env val@(Bool _) = pure val
 eval env (Atom atom) = getVar env atom
 eval env (List [Atom "quote", val]) = pure val
 eval env (List [Atom "if", pred, conseq, alt]) = do
-  result <- eval env pred
+  result <- actualValue env pred
   case result of
     Bool False -> eval env alt
     _ -> eval env conseq
@@ -64,11 +66,24 @@ eval env val@(List (Atom "lambda":varargs@(Atom _):body)) = do
     SyntaxError "Lambda expression does not have body" val
   pure $ makeVarArgs varargs env [] body
 eval env (List (function:args)) = do
-  func <- eval env function
-  argVals <- mapM (eval env) args
-  apply func argVals
+  func <- actualValue env function
+  apply env func args
 eval env badForm =
   throwError $ BadSpecialForm "Unrecognized special form" badForm
+
+actualValue :: Env -> LispVal -> IOThrowsError LispVal
+actualValue env exp = forceIt =<< eval env exp
+
+forceIt :: LispVal -> IOThrowsError LispVal
+forceIt (Thunk tref) = do
+  thunk <- liftIO $ readIORef tref
+  case thunk of
+    Right value -> pure value
+    Left (env, unevaluated) -> do
+      evaluated <- actualValue env unevaluated
+      liftIO $ writeIORef tref $ Right evaluated
+      pure evaluated
+forceIt val = pure val
 
 condToIf :: Env -> [LispVal] -> IOThrowsError LispVal
 condToIf env [] = pure $ Bool False
@@ -80,23 +95,29 @@ condToIf env (c:cs) =
       eval env (List [Atom "if", pred, conseq, alt])
     badClause -> throwError $ SyntaxError "cond" badClause
 
-apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
-apply (PrimitiveFunc func) args = liftEither $ func args
-apply (IOFunc func) args = func args
-apply (Func Function {..}) args =
+apply :: Env -> LispVal -> [LispVal] -> IOThrowsError LispVal
+apply env (PrimitiveFunc func) args = liftEither . func =<< mapM (actualValue env) args
+apply env (IOFunc func) args = func =<< mapM (actualValue env) args
+apply env (Func Function {..}) exprs = do
+  args <- forM exprs $ delayIt env
   if num params /= num args && isNothing vararg
     then throwError $ NumArgs (num params) args
-    else liftIO (bindVars closure $ zip params args) >>= bindVarArgs vararg >>=
+    else liftIO (bindVars closure $ zip params args) >>= bindVarArgs args vararg >>=
          evalBody
   where
-    remainingArgs = drop (length params) args
+    remainingArgs = drop (length params)
     num = toInteger . length
     evalBody env = last <$> mapM (eval env) body
-    bindVarArgs arg env =
+    bindVarArgs args arg env =
       case arg of
-        Just argName -> liftIO $ bindVars env [(argName, List remainingArgs)]
+        Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs args)]
         Nothing -> return env
-apply badForm args = throwError $ NotFunction "Value is not a function" badForm
+apply env badForm args = throwError $ NotFunction "Value is not a function" badForm
+
+delayIt :: (MonadIO m) => Env -> LispVal -> m LispVal
+delayIt env val = do
+  tref <- liftIO $ newIORef $ Left (env, val)
+  pure $ Thunk tref
 
 primitiveBindings :: IO Env
 primitiveBindings =
@@ -110,8 +131,7 @@ primitiveBindings =
 
 ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
 ioPrimitives =
-  [ ("apply", applyProc)
-  , ("open-input-file", makePort ReadMode)
+  [ ("open-input-file", makePort ReadMode)
   , ("open-output-file", makePort WriteMode)
   , ("close-input-port", closePort)
   , ("close-output-port", closePort)
@@ -121,10 +141,10 @@ ioPrimitives =
   , ("read-all", readAll)
   ]
 
-applyProc :: [LispVal] -> IOThrowsError LispVal
-applyProc [func, List args] = apply func args
-applyProc (func:args) = apply func args
-applyProc [] = throwError $ NumArgs 1 []
+-- applyProc :: [LispVal] -> IOThrowsError LispVal
+-- applyProc [func, List args] = apply func args
+-- applyProc (func:args) = apply func args
+-- applyProc [] = throwError $ NumArgs 1 []
 
 makePort :: IOMode -> [LispVal] -> IOThrowsError LispVal
 makePort mode [String filename] = fmap Port $ liftIO $ openFile filename mode
