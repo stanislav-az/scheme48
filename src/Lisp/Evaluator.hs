@@ -40,7 +40,7 @@ eval env (List [Atom "if", pred, conseq, alt]) = do
   case result of
     Bool False -> eval env alt
     _ -> eval env conseq
-eval env (List (Atom "cond":clauses)) = condToIf env clauses
+eval env (List (Atom "cond":clauses)) = liftEither (condToIf clauses) >>= eval env
 eval env (List [Atom "set!", Atom var, form]) = eval env form >>= setVar env var
 eval env (List [Atom "load", String filename]) =
   load filename >>= fmap last . mapM (eval env)
@@ -86,14 +86,14 @@ forceIt (Thunk tref) = do
       pure evaluated
 forceIt val = pure val
 
-condToIf :: Env -> [LispVal] -> IOThrowsError LispVal
-condToIf env [] = pure $ Bool False
-condToIf env (c:cs) =
+condToIf :: [LispVal] -> ThrowsError LispVal
+condToIf [] = pure $ Bool False
+condToIf (c:cs) =
   case c of
-    List [Atom "else", expr] -> eval env expr
+    List [Atom "else", expr] -> pure expr
     List [pred, conseq] -> do
-      alt <- condToIf env cs
-      eval env (List [Atom "if", pred, conseq, alt])
+      alt <- condToIf cs
+      pure (List [Atom "if", pred, conseq, alt])
     badClause -> throwError $ SyntaxError "cond" badClause
 
 apply :: Env -> LispVal -> [LispVal] -> IOThrowsError LispVal
